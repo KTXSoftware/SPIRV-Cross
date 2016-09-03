@@ -1062,6 +1062,9 @@ void CompilerGLSL::replace_fragment_output(SPIRVariable &var)
 		if (location != 0)
 			throw CompilerError("Arrayed output variable used, but location is not 0. "
 			                    "This is unimplemented in SPIRV-Cross.");
+
+		if (options.es && options.version < 300)
+			require_extension("GL_EXT_draw_buffers");
 	}
 	else
 		throw CompilerError("Array-of-array output variable used. This cannot be implemented in legacy GLSL.");
@@ -2021,7 +2024,12 @@ void CompilerGLSL::emit_texture_op(const Instruction &i)
 		texop += "Offset";
 
 	if (is_legacy())
+	{
 		texop = legacy_tex_op(texop, imgtype);
+
+		if (lod && options.es && options.version < 300)
+			texop += "EXT";
+	}
 
 	expr += texop;
 	expr += "(";
@@ -3610,14 +3618,20 @@ void CompilerGLSL::emit_instruction(const Instruction &instruction)
 	// Derivatives
 	case OpDPdx:
 		UFOP(dFdx);
+		if (options.es && options.version < 300)
+			require_extension("GL_OES_standard_derivatives");
 		break;
 
 	case OpDPdy:
 		UFOP(dFdy);
+		if (options.es && options.version < 300)
+			require_extension("GL_OES_standard_derivatives");
 		break;
 
 	case OpFwidth:
 		UFOP(fwidth);
+		if (options.es && options.version < 300)
+			require_extension("GL_OES_standard_derivatives");
 		break;
 
 	// Bitfield
@@ -3785,14 +3799,20 @@ void CompilerGLSL::emit_instruction(const Instruction &instruction)
 		break;
 
 	// Textures
-	case OpImageSampleImplicitLod:
 	case OpImageSampleExplicitLod:
-	case OpImageSampleProjImplicitLod:
 	case OpImageSampleProjExplicitLod:
-	case OpImageSampleDrefImplicitLod:
 	case OpImageSampleDrefExplicitLod:
-	case OpImageSampleProjDrefImplicitLod:
 	case OpImageSampleProjDrefExplicitLod:
+	{
+		if (options.es && options.version < 300)
+			require_extension("GL_EXT_shader_texture_lod");
+		emit_texture_op(instruction);
+		break;
+	}
+	case OpImageSampleImplicitLod:
+	case OpImageSampleProjImplicitLod:
+	case OpImageSampleDrefImplicitLod:
+	case OpImageSampleProjDrefImplicitLod:
 	case OpImageFetch:
 	case OpImageGather:
 	case OpImageDrefGather:
