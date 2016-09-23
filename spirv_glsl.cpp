@@ -1434,7 +1434,7 @@ string CompilerGLSL::constant_expression_vector(const SPIRConstant &c, uint32_t 
 	if (c.vector_size() > 1)
 		res += type_to_glsl(type) + "(";
 
-	bool splat = c.vector_size() > 1;
+	bool splat = backend.use_constructor_splatting && c.vector_size() > 1;
 	if (splat)
 	{
 		if (type_to_std430_base_size(type) == 8)
