@@ -185,7 +185,25 @@ void CompilerHLSL::emit_interface_block_in_struct(const SPIRVariable &var, uint3
 		auto &m = meta[var.self].decoration;
 		if (use_binding_number)
 		{
-			statement(variable_decl(type, m.alias), " : ", binding, binding_number, ";");
+			if (type.vecsize == 4 && type.columns == 4)
+			{
+				for (int i = 0; i < 4; ++i) {
+					char name[101];
+					strcpy(name, m.alias.c_str());
+					strcat(name, "_");
+					size_t length = strlen(name);
+					sprintf(&name[length], "%d", i);
+					name[length + 1] = 0;
+					SPIRType newtype = type;
+					newtype.columns = 1;
+					statement(variable_decl(newtype, name), " : ", binding, binding_number++, ";");
+				}
+				--binding_number;
+			}
+			else
+			{
+				statement(variable_decl(type, m.alias), " : ", binding, binding_number, ";");
+			}
 		}
 		else
 		{
@@ -447,7 +465,18 @@ void CompilerHLSL::emit_hlsl_entry_point()
 			    var.storage == StorageClassInput && interface_variable_exists_in_entry_point(var.self))
 			{
 				auto &m = meta[var.self].decoration;
-				statement(m.alias, " = input.", m.alias, ";");
+				auto &type = get<SPIRType>(var.basetype);
+				if (type.vecsize == 4 && type.columns == 4)
+				{
+					statement(m.alias, "[0] = input.", m.alias, "_0;");
+					statement(m.alias, "[1] = input.", m.alias, "_1;");
+					statement(m.alias, "[2] = input.", m.alias, "_2;");
+					statement(m.alias, "[3] = input.", m.alias, "_3;");
+				}
+				else
+				{
+					statement(m.alias, " = input.", m.alias, ";");
+				}
 			}
 		}
 	}
