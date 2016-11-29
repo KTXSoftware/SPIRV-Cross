@@ -16,6 +16,7 @@
 
 #include "spirv_cross.hpp"
 #include "GLSL.std.450.h"
+#include "spirv_cfg.hpp"
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -81,6 +82,7 @@ bool Compiler::block_is_pure(const SPIRBlock &block)
 			break;
 		}
 
+		case OpCopyMemory:
 		case OpStore:
 		{
 			auto &type = expression_type(ops[0]);
@@ -319,6 +321,9 @@ const SPIRType &Compiler::expression_type(uint32_t id) const
 	case TypeConstant:
 		return get<SPIRType>(get<SPIRConstant>(id).constant_type);
 
+	case TypeConstantOp:
+		return get<SPIRType>(get<SPIRConstantOp>(id).basetype);
+
 	case TypeUndef:
 		return get<SPIRType>(get<SPIRUndef>(id).basetype);
 
@@ -354,7 +359,8 @@ bool Compiler::is_immutable(uint32_t id) const
 	}
 	else if (ids[id].get_type() == TypeExpression)
 		return get<SPIRExpression>(id).immutable;
-	else if (ids[id].get_type() == TypeConstant || ids[id].get_type() == TypeUndef)
+	else if (ids[id].get_type() == TypeConstant || ids[id].get_type() == TypeConstantOp ||
+	         ids[id].get_type() == TypeUndef)
 		return true;
 	else
 		return false;
@@ -481,9 +487,25 @@ bool Compiler::InterfaceVariableAccessHandler::handle(Op opcode, const uint32_t 
 		variable = args[0];
 		break;
 
+	case OpCopyMemory:
+	{
+		if (length < 3)
+			return false;
+
+		auto *var = compiler.maybe_get<SPIRVariable>(args[0]);
+		if (var && storage_class_is_interface(var->storage))
+			variables.insert(variable);
+
+		var = compiler.maybe_get<SPIRVariable>(args[1]);
+		if (var && storage_class_is_interface(var->storage))
+			variables.insert(variable);
+		break;
+	}
+
 	case OpAccessChain:
 	case OpInBoundsAccessChain:
 	case OpLoad:
+	case OpCopyObject:
 	case OpImageTexelPointer:
 	case OpAtomicLoad:
 	case OpAtomicExchange:
@@ -819,6 +841,10 @@ void Compiler::set_member_decoration(uint32_t id, uint32_t index, Decoration dec
 		dec.offset = argument;
 		break;
 
+	case DecorationSpecId:
+		dec.spec_id = argument;
+		break;
+
 	default:
 		break;
 	}
@@ -842,6 +868,12 @@ const std::string &Compiler::get_member_name(uint32_t id, uint32_t index) const
 	return m.members[index].alias;
 }
 
+void Compiler::set_member_qualified_name(uint32_t id, uint32_t index, const std::string &name)
+{
+	meta.at(id).members.resize(max(meta[id].members.size(), size_t(index) + 1));
+	meta.at(id).members[index].qualified_alias = name;
+}
+
 uint32_t Compiler::get_member_decoration(uint32_t id, uint32_t index, Decoration decoration) const
 {
 	auto &m = meta.at(id);
@@ -860,6 +892,8 @@ uint32_t Compiler::get_member_decoration(uint32_t id, uint32_t index, Decoration
 		return dec.location;
 	case DecorationOffset:
 		return dec.offset;
+	case DecorationSpecId:
+		return dec.spec_id;
 	default:
 		return 0;
 	}
@@ -895,6 +929,10 @@ void Compiler::unset_member_decoration(uint32_t id, uint32_t index, Decoration d
 
 	case DecorationOffset:
 		dec.offset = 0;
+		break;
+
+	case DecorationSpecId:
+		dec.spec_id = 0;
 		break;
 
 	default:
@@ -938,6 +976,10 @@ void Compiler::set_decoration(uint32_t id, Decoration decoration, uint32_t argum
 		dec.input_attachment = argument;
 		break;
 
+	case DecorationSpecId:
+		dec.spec_id = argument;
+		break;
+
 	default:
 		break;
 	}
@@ -979,6 +1021,8 @@ uint32_t Compiler::get_decoration(uint32_t id, Decoration decoration) const
 		return dec.set;
 	case DecorationInputAttachmentIndex:
 		return dec.input_attachment;
+	case DecorationSpecId:
+		return dec.spec_id;
 	default:
 		return 0;
 	}
@@ -1008,6 +1052,14 @@ void Compiler::unset_decoration(uint32_t id, Decoration decoration)
 
 	case DecorationDescriptorSet:
 		dec.set = 0;
+		break;
+
+	case DecorationInputAttachmentIndex:
+		dec.input_attachment = 0;
+		break;
+
+	case DecorationSpecId:
+		dec.spec_id = 0;
 		break;
 
 	default:
@@ -1083,13 +1135,17 @@ void Compiler::parse(const Instruction &instruction)
 
 	case OpEntryPoint:
 	{
-		auto itr = entry_points.emplace(ops[1], SPIREntryPoint(ops[1], static_cast<ExecutionModel>(ops[0]),
-		                                                       extract_string(spirv, instruction.offset + 2)));
+		auto itr =
+		    entry_points.insert(make_pair(ops[1], SPIREntryPoint(ops[1], static_cast<ExecutionModel>(ops[0]),
+		                                                         extract_string(spirv, instruction.offset + 2))));
 		auto &e = itr.first->second;
 
 		// Strings need nul-terminator and consume the whole word.
-		uint32_t strlen_words = (e.name.size() + 1 + 3) >> 2;
+		uint32_t strlen_words = uint32_t((e.name.size() + 1 + 3) >> 2);
 		e.interface_variables.insert(end(e.interface_variables), ops + strlen_words + 2, ops + instruction.length);
+
+		// Set the name of the entry point in case OpName is not provided later
+		set_name(ops[1], e.name);
 
 		// If we don't have an entry, make the first one our "default".
 		if (!entry_point)
@@ -1149,6 +1205,7 @@ void Compiler::parse(const Instruction &instruction)
 			set_decoration(id, decoration, ops[2]);
 		else
 			set_decoration(id, decoration);
+
 		break;
 	}
 
@@ -1242,7 +1299,12 @@ void Compiler::parse(const Instruction &instruction)
 		auto &arraybase = set<SPIRType>(id);
 
 		arraybase = base;
-		arraybase.array.push_back(get<SPIRConstant>(ops[2]).scalar());
+
+		auto *c = maybe_get<SPIRConstant>(ops[2]);
+		bool literal = c && !c->specialization;
+
+		arraybase.array_size_literal.push_back(literal);
+		arraybase.array.push_back(literal ? c->scalar() : ops[2]);
 		// Do NOT set arraybase.self!
 		break;
 	}
@@ -1256,6 +1318,7 @@ void Compiler::parse(const Instruction &instruction)
 
 		arraybase = base;
 		arraybase.array.push_back(0);
+		arraybase.array_size_literal.push_back(true);
 		// Do NOT set arraybase.self!
 		break;
 	}
@@ -1592,6 +1655,13 @@ void Compiler::parse(const Instruction &instruction)
 
 	case OpFunctionEnd:
 	{
+		if (current_block)
+		{
+			// Very specific error message, but seems to come up quite often.
+			throw CompilerError(
+			    "Cannot end a function before ending the current block.\n"
+			    "Likely cause: If this SPIR-V was created from glslang HLSL, make sure the entry point is valid.");
+		}
 		current_function = nullptr;
 		break;
 	}
@@ -1731,6 +1801,19 @@ void Compiler::parse(const Instruction &instruction)
 		// they are treated as continues.
 		if (current_block->continue_block != current_block->self)
 			continue_blocks.insert(current_block->continue_block);
+		break;
+	}
+
+	case OpSpecConstantOp:
+	{
+		if (length < 3)
+			throw CompilerError("OpSpecConstantOp not enough arguments.");
+
+		uint32_t result_type = ops[0];
+		uint32_t id = ops[1];
+		auto spec_op = static_cast<Op>(ops[2]);
+
+		set<SPIRConstantOp>(id, result_type, spec_op, ops + 3, length - 3);
 		break;
 	}
 
@@ -1915,6 +1998,8 @@ SPIRBlock::ContinueBlockType Compiler::continue_block_type(const SPIRBlock &bloc
 
 bool Compiler::traverse_all_reachable_opcodes(const SPIRBlock &block, OpcodeHandler &handler) const
 {
+	handler.set_current_block(block);
+
 	// Ideally, perhaps traverse the CFG instead of all blocks in order to eliminate dead blocks,
 	// but this shouldn't be a problem in practice unless the SPIR-V is doing insane things like recursing
 	// inside dead blocks ...
@@ -1928,12 +2013,16 @@ bool Compiler::traverse_all_reachable_opcodes(const SPIRBlock &block, OpcodeHand
 
 		if (op == OpFunctionCall)
 		{
-			if (!handler.begin_function_scope(ops, i.length))
-				return false;
-			if (!traverse_all_reachable_opcodes(get<SPIRFunction>(ops[2]), handler))
-				return false;
-			if (!handler.end_function_scope(ops, i.length))
-				return false;
+			auto &func = get<SPIRFunction>(ops[2]);
+			if (handler.follow_function_call(func))
+			{
+				if (!handler.begin_function_scope(ops, i.length))
+					return false;
+				if (!traverse_all_reachable_opcodes(get<SPIRFunction>(ops[2]), handler))
+					return false;
+				if (!handler.end_function_scope(ops, i.length))
+					return false;
+			}
 		}
 	}
 
@@ -2031,7 +2120,14 @@ size_t Compiler::get_declared_struct_member_size(const SPIRType &struct_type, ui
 		// Recurse.
 		uint32_t last = uint32_t(struct_type.member_types.size() - 1);
 		uint32_t offset = type_struct_member_offset(struct_type, last);
-		size_t size = get_declared_struct_size(get<SPIRType>(struct_type.member_types.back()));
+		size_t size;
+
+		// If we have an array of structs inside our struct, handle that with array strides instead.
+		auto &last_type = get<SPIRType>(struct_type.member_types.back());
+		if (last_type.array.empty())
+			size = get_declared_struct_size(last_type);
+		else
+			size = type_struct_member_array_stride(struct_type, last) * last_type.array.back();
 		return offset + size;
 	}
 }
@@ -2423,13 +2519,13 @@ void Compiler::CombinedImageSamplerHandler::register_combined_image_sampler(SPIR
 	if (texture_itr != end(caller.arguments))
 	{
 		param.global_image = false;
-		param.image_id = texture_itr - begin(caller.arguments);
+		param.image_id = uint32_t(texture_itr - begin(caller.arguments));
 	}
 
 	if (sampler_itr != end(caller.arguments))
 	{
 		param.global_sampler = false;
-		param.sampler_id = sampler_itr - begin(caller.arguments);
+		param.sampler_id = uint32_t(sampler_itr - begin(caller.arguments));
 	}
 
 	if (param.global_image && param.global_sampler)
@@ -2620,4 +2716,224 @@ void Compiler::build_combined_image_samplers()
 	combined_image_samplers.clear();
 	CombinedImageSamplerHandler handler(*this);
 	traverse_all_reachable_opcodes(get<SPIRFunction>(entry_point), handler);
+}
+
+vector<SpecializationConstant> Compiler::get_specialization_constants() const
+{
+	vector<SpecializationConstant> spec_consts;
+	for (auto &id : ids)
+	{
+		if (id.get_type() == TypeConstant)
+		{
+			auto &c = id.get<SPIRConstant>();
+			if (c.specialization)
+			{
+				spec_consts.push_back({ c.self, get_decoration(c.self, DecorationSpecId) });
+			}
+		}
+	}
+	return spec_consts;
+}
+
+SPIRConstant &Compiler::get_constant(uint32_t id)
+{
+	return get<SPIRConstant>(id);
+}
+
+const SPIRConstant &Compiler::get_constant(uint32_t id) const
+{
+	return get<SPIRConstant>(id);
+}
+
+void Compiler::analyze_variable_scope(SPIRFunction &entry)
+{
+	struct AccessHandler : OpcodeHandler
+	{
+	public:
+		AccessHandler(Compiler &compiler_)
+		    : compiler(compiler_)
+		{
+		}
+
+		bool follow_function_call(const SPIRFunction &)
+		{
+			// Only analyze within this function.
+			return false;
+		}
+
+		void set_current_block(const SPIRBlock &block)
+		{
+			current_block = &block;
+
+			// If we're branching to a block which uses OpPhi, in GLSL
+			// this will be a variable write when we branch,
+			// so we need to track access to these variables as well to
+			// have a complete picture.
+			const auto test_phi = [this, &block](uint32_t to) {
+				auto &next = compiler.get<SPIRBlock>(to);
+				for (auto &phi : next.phi_variables)
+					if (phi.parent == block.self)
+						accessed_variables_to_block[phi.function_variable].insert(block.self);
+			};
+
+			switch (block.terminator)
+			{
+			case SPIRBlock::Direct:
+				test_phi(block.next_block);
+				break;
+
+			case SPIRBlock::Select:
+				test_phi(block.true_block);
+				test_phi(block.false_block);
+				break;
+
+			case SPIRBlock::MultiSelect:
+				for (auto &target : block.cases)
+					test_phi(target.block);
+				if (block.default_block)
+					test_phi(block.default_block);
+				break;
+
+			default:
+				break;
+			}
+		}
+
+		bool handle(spv::Op op, const uint32_t *args, uint32_t length)
+		{
+			switch (op)
+			{
+			case OpStore:
+			{
+				if (length < 2)
+					return false;
+
+				uint32_t ptr = args[0];
+				auto *var = compiler.maybe_get_backing_variable(ptr);
+				if (var && var->storage == StorageClassFunction)
+					accessed_variables_to_block[var->self].insert(current_block->self);
+				break;
+			}
+
+			case OpAccessChain:
+			case OpInBoundsAccessChain:
+			{
+				if (length < 3)
+					return false;
+
+				uint32_t ptr = args[2];
+				auto *var = compiler.maybe_get<SPIRVariable>(ptr);
+				if (var && var->storage == StorageClassFunction)
+					accessed_variables_to_block[var->self].insert(current_block->self);
+				break;
+			}
+
+			case OpCopyMemory:
+			{
+				if (length < 3)
+					return false;
+
+				uint32_t lhs = args[0];
+				uint32_t rhs = args[1];
+				auto *var = compiler.maybe_get_backing_variable(lhs);
+				if (var && var->storage == StorageClassFunction)
+					accessed_variables_to_block[var->self].insert(current_block->self);
+
+				var = compiler.maybe_get_backing_variable(rhs);
+				if (var && var->storage == StorageClassFunction)
+					accessed_variables_to_block[var->self].insert(current_block->self);
+				break;
+			}
+
+			case OpCopyObject:
+			{
+				if (length < 3)
+					return false;
+
+				auto *var = compiler.maybe_get_backing_variable(args[2]);
+				if (var && var->storage == StorageClassFunction)
+					accessed_variables_to_block[var->self].insert(current_block->self);
+				break;
+			}
+
+			case OpLoad:
+			{
+				if (length < 3)
+					return false;
+				uint32_t ptr = args[2];
+				auto *var = compiler.maybe_get_backing_variable(ptr);
+				if (var && var->storage == StorageClassFunction)
+					accessed_variables_to_block[var->self].insert(current_block->self);
+				break;
+			}
+
+			case OpFunctionCall:
+			{
+				if (length < 3)
+					return false;
+
+				length -= 3;
+				args += 3;
+				for (uint32_t i = 0; i < length; i++)
+				{
+					auto *var = compiler.maybe_get_backing_variable(args[i]);
+					if (var && var->storage == StorageClassFunction)
+						accessed_variables_to_block[var->self].insert(current_block->self);
+				}
+				break;
+			}
+
+			case OpPhi:
+			{
+				if (length < 2)
+					return false;
+
+				// Phi nodes are implemented as function variables, so register an access here.
+				accessed_variables_to_block[args[1]].insert(current_block->self);
+				break;
+			}
+
+			// Atomics shouldn't be able to access function-local variables.
+			// Some GLSL builtins access a pointer.
+
+			default:
+				break;
+			}
+			return true;
+		}
+
+		Compiler &compiler;
+		std::unordered_map<uint32_t, std::unordered_set<uint32_t>> accessed_variables_to_block;
+		const SPIRBlock *current_block = nullptr;
+	} handler(*this);
+
+	// First, we map out all variable access within a function.
+	// Essentially a map of block -> { variables accessed in the basic block }
+	this->traverse_all_reachable_opcodes(entry, handler);
+
+	// Compute the control flow graph for this function.
+	CFG cfg(*this, entry);
+
+	// For each variable which is statically accessed.
+	for (auto &var : handler.accessed_variables_to_block)
+	{
+		DominatorBuilder builder(cfg);
+		auto &blocks = var.second;
+
+		// Figure out which block is dominating all accesses of those variables.
+		for (auto &block : blocks)
+			builder.add_block(block);
+
+		builder.lift_continue_block_dominator();
+
+		// Add it to a per-block list of variables.
+		uint32_t dominating_block = builder.get_dominator();
+		// If all blocks here are dead code, this will be 0, so the variable in question
+		// will be completely eliminated.
+		if (dominating_block)
+		{
+			auto &block = this->get<SPIRBlock>(dominating_block);
+			block.dominated_variables.push_back(var.first);
+		}
+	}
 }

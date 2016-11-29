@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef SPIRV_COMMON_HPP
-#define SPIRV_COMMON_HPP
+#ifndef SPIRV_CROSS_COMMON_HPP
+#define SPIRV_CROSS_COMMON_HPP
 
 #include <functional>
 #include <sstream>
@@ -134,6 +134,7 @@ enum Types
 	TypeBlock,
 	TypeExtension,
 	TypeExpression,
+	TypeConstantOp,
 	TypeUndef
 };
 
@@ -147,6 +148,25 @@ struct SPIRUndef : IVariant
 	    : basetype(basetype_)
 	{
 	}
+	uint32_t basetype;
+};
+
+struct SPIRConstantOp : IVariant
+{
+	enum
+	{
+		type = TypeConstantOp
+	};
+
+	SPIRConstantOp(uint32_t result_type, spv::Op op, const uint32_t *args, uint32_t length)
+	    : opcode(op)
+	    , arguments(args, args + length)
+	    , basetype(result_type)
+	{
+	}
+
+	spv::Op opcode;
+	std::vector<uint32_t> arguments;
 	uint32_t basetype;
 };
 
@@ -182,8 +202,15 @@ struct SPIRType : IVariant
 	uint32_t vecsize = 1;
 	uint32_t columns = 1;
 
-	// Arrays, suport array of arrays by having a vector of array sizes.
+	// Arrays, support array of arrays by having a vector of array sizes.
 	std::vector<uint32_t> array;
+
+	// Array elements can be either specialization constants or specialization ops.
+	// This array determines how to interpret the array size.
+	// If an element is true, the element is a literal,
+	// otherwise, it's an expression, which must be resolved on demand.
+	// The actual size is not really known until runtime.
+	std::vector<bool> array_size_literal;
 
 	// Pointers
 	bool pointer = false;
@@ -329,7 +356,6 @@ struct SPIRBlock : IVariant
 
 		Select, // Block ends with an if/else block.
 		MultiSelect, // Block ends with switch statement.
-		Loop, // Block ends with a loop.
 
 		Return, // Block ends with return.
 		Unreachable, // Noop
@@ -417,6 +443,10 @@ struct SPIRBlock : IVariant
 	// The dominating block which this block might be within.
 	// Used in continue; blocks to determine if we really need to write continue.
 	uint32_t loop_dominator = 0;
+
+	// All access to these variables are dominated by this block,
+	// so before branching anywhere we need to make sure that we declare these variables.
+	std::vector<uint32_t> dominated_variables;
 };
 
 struct SPIRFunction : IVariant
@@ -483,6 +513,7 @@ struct SPIRFunction : IVariant
 	bool active = false;
 	bool flush_undeclared = true;
 	bool do_combined_parameters = true;
+	bool analyzed_variable_scope = false;
 };
 
 struct SPIRVariable : IVariant
@@ -818,6 +849,7 @@ struct Meta
 	struct Decoration
 	{
 		std::string alias;
+		std::string qualified_alias;
 		uint64_t decoration_flags = 0;
 		spv::BuiltIn builtin_type;
 		uint32_t location = 0;
@@ -826,6 +858,7 @@ struct Meta
 		uint32_t offset = 0;
 		uint32_t array_stride = 0;
 		uint32_t input_attachment = 0;
+		uint32_t spec_id = 0;
 		bool builtin = false;
 		bool per_instance = false;
 	};

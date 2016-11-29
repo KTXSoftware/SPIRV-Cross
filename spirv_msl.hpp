@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef SPIRV_MSL_HPP
-#define SPIRV_MSL_HPP
+#ifndef SPIRV_CROSS_MSL_HPP
+#define SPIRV_CROSS_MSL_HPP
 
 #include "spirv_glsl.hpp"
 #include <set>
@@ -96,6 +96,9 @@ public:
 	std::string compile() override;
 
 protected:
+	void emit_instruction(const Instruction &instr) override;
+	void emit_glsl_op(uint32_t result_type, uint32_t result_id, uint32_t op, const uint32_t *args,
+	                  uint32_t count) override;
 	void emit_header() override;
 	void emit_function_prototype(SPIRFunction &func, uint64_t return_flags) override;
 	void emit_sampled_image_op(uint32_t result_type, uint32_t result_id, uint32_t image_id, uint32_t samp_id) override;
@@ -107,9 +110,16 @@ protected:
 	std::string member_decl(const SPIRType &type, const SPIRType &member_type, uint32_t member) override;
 	std::string constant_expression(const SPIRConstant &c) override;
 	size_t get_declared_struct_member_size(const SPIRType &struct_type, uint32_t index) const override;
+	std::string to_func_call_arg(uint32_t id) override;
+	std::string to_name(uint32_t id, bool allow_alias = true) override;
 
 	void extract_builtins();
+	void add_builtin(spv::BuiltIn builtin_type);
 	void localize_global_variables();
+	void extract_global_variables_from_functions();
+	void extract_global_variables_from_function(uint32_t func_id, std::set<uint32_t> &added_arg_ids,
+	                                            std::set<uint32_t> &global_var_ids,
+	                                            std::set<uint32_t> &processed_func_ids);
 	void add_interface_structs();
 	void bind_vertex_attributes(std::set<uint32_t> &bindings);
 	uint32_t add_interface_struct(spv::StorageClass storage, uint32_t vtx_binding = 0);
@@ -122,6 +132,8 @@ protected:
 	std::string clean_func_name(std::string func_name);
 	std::string entry_point_args(bool append_comma);
 	std::string get_entry_point_name();
+	std::string to_qualified_member_name(const SPIRType &type, uint32_t index);
+	std::string ensure_valid_name(std::string name, std::string pfx);
 	std::string to_sampler_expression(uint32_t id);
 	std::string builtin_qualifier(spv::BuiltIn builtin);
 	std::string builtin_type_decl(spv::BuiltIn builtin);

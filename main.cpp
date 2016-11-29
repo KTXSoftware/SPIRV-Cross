@@ -196,7 +196,13 @@ static void print_resources(const Compiler &compiler, const char *tag, const vec
 		bool is_push_constant = compiler.get_storage_class(res.id) == StorageClassPushConstant;
 		bool is_block = (compiler.get_decoration_mask(type.self) &
 		                 ((1ull << DecorationBlock) | (1ull << DecorationBufferBlock))) != 0;
+		bool is_sized_block = is_block && (compiler.get_storage_class(res.id) == StorageClassUniform ||
+		                                   compiler.get_storage_class(res.id) == StorageClassUniformConstant);
 		uint32_t fallback_id = !is_push_constant && is_block ? res.base_type_id : res.id;
+
+		uint32_t block_size = 0;
+		if (is_sized_block)
+			block_size = compiler.get_declared_struct_size(compiler.get_type(res.base_type_id));
 
 		string array;
 		for (auto arr : type.array)
@@ -213,6 +219,8 @@ static void print_resources(const Compiler &compiler, const char *tag, const vec
 			fprintf(stderr, " (Binding : %u)", compiler.get_decoration(res.id, DecorationBinding));
 		if (mask & (1ull << DecorationInputAttachmentIndex))
 			fprintf(stderr, " (Attachment : %u)", compiler.get_decoration(res.id, DecorationInputAttachmentIndex));
+		if (is_sized_block)
+			fprintf(stderr, " (BlockSize : %u bytes)", block_size);
 		fprintf(stderr, "\n");
 	}
 	fprintf(stderr, "=============\n\n");
@@ -347,6 +355,16 @@ static void print_push_constant_resources(const Compiler &compiler, const vector
 	}
 }
 
+static void print_spec_constants(const Compiler &compiler)
+{
+	auto spec_constants = compiler.get_specialization_constants();
+	fprintf(stderr, "Specialization constants\n");
+	fprintf(stderr, "==================\n\n");
+	for (auto &c : spec_constants)
+		fprintf(stderr, "ID: %u, Spec ID: %u\n", c.id, c.constant_id);
+	fprintf(stderr, "==================\n\n");
+}
+
 struct PLSArg
 {
 	PlsFormat format;
@@ -391,11 +409,13 @@ struct CLIArguments
 	bool metal = false;
 	bool vulkan_semantics = false;
 	bool remove_unused = false;
+	bool cfg_analysis = true;
 };
 
 static void print_help()
 {
-	fprintf(stderr, "Usage: spirv-cross [--output <output path>] [SPIR-V file] [--es] [--no-es] [--version <GLSL "
+	fprintf(stderr, "Usage: spirv-cross [--output <output path>] [SPIR-V file] [--es] [--no-es] [--no-cfg-analysis] "
+	                "[--version <GLSL "
 	                "version>] [--dump-resources] [--help] [--force-temporary] [--cpp] [--cpp-interface-name <name>] "
 	                "[--metal] [--vulkan-semantics] [--flatten-ubo] [--fixup-clipspace] [--iterations iter] [--pls-in "
 	                "format input-name] [--pls-out format output-name] [--remap source_name target_name components] "
@@ -509,6 +529,7 @@ int main(int argc, char *argv[])
 		args.version = parser.next_uint();
 		args.set_version = true;
 	});
+	cbs.add("--no-cfg-analysis", [&args](CLIParser &) { args.cfg_analysis = false; });
 	cbs.add("--dump-resources", [&args](CLIParser &) { args.dump_resources = true; });
 	cbs.add("--force-temporary", [&args](CLIParser &) { args.force_temporary = true; });
 	cbs.add("--flatten-ubo", [&args](CLIParser &) { args.flatten_ubo = true; });
@@ -613,6 +634,7 @@ int main(int argc, char *argv[])
 	opts.force_temporary = args.force_temporary;
 	opts.vulkan_semantics = args.vulkan_semantics;
 	opts.vertex.fixup_clipspace = args.fixup;
+	opts.cfg_analysis = args.cfg_analysis;
 	compiler->set_options(opts);
 
 	ShaderResources res;
@@ -650,6 +672,7 @@ int main(int argc, char *argv[])
 	{
 		print_resources(*compiler, res);
 		print_push_constant_resources(*compiler, res.push_constant_buffers);
+		print_spec_constants(*compiler);
 	}
 
 	if (combined_image_samplers)

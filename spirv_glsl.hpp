@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef SPIRV_GLSL_HPP
-#define SPIRV_GLSL_HPP
+#ifndef SPIRV_CROSS_GLSL_HPP
+#define SPIRV_CROSS_GLSL_HPP
 
 #include "spirv_cross.hpp"
 #include <sstream>
@@ -59,6 +59,9 @@ public:
 		uint32_t version = 450;
 		bool es = false;
 		bool force_temporary = false;
+
+		// If true, variables will be moved to their appropriate scope through CFG analysis.
+		bool cfg_analysis = true;
 
 		// If true, Vulkan GLSL features are used instead of GL-compatible features.
 		// Mostly useful for debugging SPIR-V files.
@@ -112,7 +115,12 @@ public:
 	{
 		options = opts;
 	}
+
 	std::string compile() override;
+
+	// Returns the current string held in the conversion buffer. Useful for
+	// capturing what has been converted so far when compile() throws an error.
+	std::string get_partial_source();
 
 	// Adds a line to be added right after #version in GLSL backend.
 	// This is useful for enabling custom extensions which are outside the scope of SPIRV-Cross.
@@ -136,6 +144,9 @@ protected:
 
 	// Virtualize methods which need to be overridden by subclass targets like C++ and such.
 	virtual void emit_function_prototype(SPIRFunction &func, uint64_t return_flags);
+	virtual void emit_instruction(const Instruction &instr);
+	virtual void emit_glsl_op(uint32_t result_type, uint32_t result_id, uint32_t op, const uint32_t *args,
+	                          uint32_t count);
 	virtual void emit_header();
 	virtual void emit_sampled_image_op(uint32_t result_type, uint32_t result_id, uint32_t image_id, uint32_t samp_id);
 	virtual void emit_texture_op(const Instruction &i);
@@ -144,9 +155,11 @@ protected:
 	virtual std::string member_decl(const SPIRType &type, const SPIRType &member_type, uint32_t member);
 	virtual std::string image_type_glsl(const SPIRType &type);
 	virtual std::string constant_expression(const SPIRConstant &c);
+	std::string constant_op_expression(const SPIRConstantOp &cop);
 	virtual std::string constant_expression_vector(const SPIRConstant &c, uint32_t vector);
 	virtual void emit_fixup();
 	virtual std::string variable_decl(const SPIRType &type, const std::string &name);
+	virtual std::string to_func_call_arg(uint32_t id);
 	virtual void emit_instruction(const Instruction &instr);
 	virtual void emit_glsl_op(uint32_t result_type, uint32_t result_id, uint32_t op, const uint32_t *args, uint32_t count);
 
@@ -205,6 +218,8 @@ protected:
 	Options options;
 
 	std::string type_to_array_glsl(const SPIRType &type);
+	std::string to_array_size(const SPIRType &type, uint32_t index);
+	uint32_t to_array_size_literal(const SPIRType &type, uint32_t index) const;
 	std::string variable_decl(const SPIRVariable &variable);
 
 	void add_local_variable_name(uint32_t id);
@@ -219,6 +234,7 @@ protected:
 	// shouldn't need polymorphism.
 	struct BackendVariations
 	{
+		std::string discard_literal = "discard";
 		bool float_literal_suffix = false;
 		bool double_literal_suffix = true;
 		bool uint32_t_literal_suffix = true;
@@ -234,7 +250,6 @@ protected:
 	} backend;
 
 	void emit_struct(SPIRType &type);
-
 	void emit_resources();
 	void emit_buffer_block(const SPIRVariable &type);
 	void emit_push_constant_block(const SPIRVariable &var);
@@ -242,6 +257,7 @@ protected:
 	void emit_push_constant_block_glsl(const SPIRVariable &var);
 	void emit_interface_block(const SPIRVariable &type);
 	void emit_block_chain(SPIRBlock &block);
+	void emit_specialization_constant(const SPIRConstant &constant);
 	std::string emit_continue_block(uint32_t continue_block);
 	bool attempt_emit_loop_header(SPIRBlock &block, SPIRBlock::Method method);
 	void emit_uniform(const SPIRVariable &var);
@@ -252,10 +268,11 @@ protected:
 	void flush_phi(uint32_t from, uint32_t to);
 	bool flush_phi_required(uint32_t from, uint32_t to);
 	void flush_variable_declaration(uint32_t id);
-	void flush_undeclared_variables();
+	void flush_undeclared_variables(SPIRBlock &block);
 
 	bool should_forward(uint32_t id);
 	void emit_mix_op(uint32_t result_type, uint32_t id, uint32_t left, uint32_t right, uint32_t lerp);
+	bool to_trivial_mix_op(const SPIRType &type, std::string &op, uint32_t left, uint32_t right, uint32_t lerp);
 	void emit_quaternary_func_op(uint32_t result_type, uint32_t result_id, uint32_t op0, uint32_t op1, uint32_t op2,
 	                             uint32_t op3, const char *op);
 	void emit_trinary_func_op(uint32_t result_type, uint32_t result_id, uint32_t op0, uint32_t op1, uint32_t op2,
@@ -281,6 +298,7 @@ protected:
 	const char *index_to_swizzle(uint32_t index);
 	std::string remap_swizzle(uint32_t result_type, uint32_t input_components, uint32_t expr);
 	std::string declare_temporary(uint32_t type, uint32_t id);
+	void append_global_func_args(const SPIRFunction &func, uint32_t index, std::vector<std::string> &arglist);
 	std::string to_expression(uint32_t id);
 	std::string to_member_name(const SPIRType &type, uint32_t index);
 	std::string type_to_glsl_constructor(const SPIRType &type);
@@ -290,6 +308,7 @@ protected:
 	const char *flags_to_precision_qualifiers_glsl(const SPIRType &type, uint64_t flags);
 	const char *format_to_glsl(spv::ImageFormat format);
 	std::string layout_for_member(const SPIRType &type, uint32_t index);
+	std::string to_interpolation_qualifiers(uint64_t flags);
 	uint64_t combined_decoration_for_member(const SPIRType &type, uint32_t index);
 	std::string layout_for_variable(const SPIRVariable &variable);
 	std::string to_combined_image_sampler(uint32_t image_id, uint32_t samp_id);

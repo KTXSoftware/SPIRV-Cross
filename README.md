@@ -21,7 +21,7 @@ However, most missing features are expected to be "trivial" improvements at this
 
 SPIRV-Cross has been tested on Linux, OSX and Windows.
 
-### Linux and OSX
+### Linux and macOS
 
 Just run `make` on the command line. A recent GCC (4.8+) or Clang (3.x+) compiler is required as SPIRV-Cross uses C++11 extensively.
 
@@ -117,6 +117,41 @@ Please see `samples/cpp` where some GLSL shaders are compiled to SPIR-V, decompi
 Reading through the samples should explain how to use the C++ interface.
 A simple Makefile is included to build all shaders in the directory.
 
+### Using SPIRV-Cross to output GLSL shaders from glslang HLSL
+
+#### Entry point
+
+When using SPIR-V shaders compiled from HLSL, there are some extra things you need to take care of.
+First make sure that the entry point is used correctly.
+If you forget to set the entry point correctly in glslangValidator (-e MyFancyEntryPoint),
+you will likely encounter this error message:
+
+```
+Cannot end a function before ending the current block.
+Likely cause: If this SPIR-V was created from glslang HLSL, make sure the entry point is valid.
+```
+
+#### Separate image samplers
+
+Another thing you need to remember is when using samplers and textures in HLSL these are separable, and not directly compatible with GLSL. If you need to use this with desktop GL/GLES, you need to call `Compiler::build_combined_image_samplers` first before calling `Compiler::compile`, or you will get an exception.
+
+```
+// From main.cpp
+// Builds a mapping for all combinations of images and samplers.
+compiler->build_combined_image_samplers();
+
+// Give the remapped combined samplers new names.
+// Here you can also set up decorations if you want (binding = #N).
+for (auto &remap : compiler->get_combined_image_samplers())
+{
+   compiler->set_name(remap.combined_id, join("SPIRV_Cross_Combined", compiler->get_name(remap.image_id),
+            compiler->get_name(remap.sampler_id)));
+}
+```
+
+If your target is Vulkan GLSL, `--vulkan-semantics` will emit separate image samplers as you'd expect.
+The command line client does this automatically, but if you're calling the library, you'll need to do this yourself.
+
 ## Contributing
 
 Contributions to SPIRV-Cross are welcome. See Testing and Licensing sections for details.
@@ -142,8 +177,14 @@ along with the Apache 2.0 licensing stub.
 
 ### Formatting
 
-SPIRV-Cross uses clang-format to automatically format code.
-Please use clang-format with the style sheet found in `.clang-format` to automatically format code before submitting a pull request.
+SPIRV-Cross uses `clang-format` to automatically format code.
+Please use `clang-format` with the style sheet found in `.clang-format` to automatically format code before submitting a pull request.
+
+To make things easy, the `format_all.sh` script can be used to format all
+source files in the library. In this directory, run the following from the
+command line:
+
+	./format_all.sh
 
 ## ABI concerns
 
