@@ -160,8 +160,6 @@ protected:
 	virtual void emit_fixup();
 	virtual std::string variable_decl(const SPIRType &type, const std::string &name);
 	virtual std::string to_func_call_arg(uint32_t id);
-	virtual void emit_instruction(const Instruction &instr);
-	virtual void emit_glsl_op(uint32_t result_type, uint32_t result_id, uint32_t op, const uint32_t *args, uint32_t count);
 
 	std::unique_ptr<std::ostringstream> buffer;
 
