@@ -223,6 +223,11 @@ protected:
 	void add_local_variable_name(uint32_t id);
 	void add_resource_name(uint32_t id);
 	void add_member_name(SPIRType &type, uint32_t name);
+
+	bool is_non_native_row_major_matrix(uint32_t id);
+	bool member_is_non_native_row_major_matrix(const SPIRType &type, uint32_t index);
+	virtual std::string convert_row_major_matrix(std::string exp_str);
+
 	std::unordered_set<std::string> local_variable_names;
 	std::unordered_set<std::string> resource_names;
 
@@ -244,6 +249,7 @@ protected:
 		bool flexible_member_array_supported = true;
 		bool explicit_struct_type = false;
 		bool use_initializer_list = false;
+		bool native_row_major_matrix = true;
 		bool use_constructor_splatting = true;
 	} backend;
 
@@ -289,7 +295,7 @@ protected:
 	void emit_unary_op(uint32_t result_type, uint32_t result_id, uint32_t op0, const char *op);
 	bool expression_is_forwarded(uint32_t id);
 	SPIRExpression &emit_op(uint32_t result_type, uint32_t result_id, const std::string &rhs, bool forward_rhs,
-	                        bool extra_parens, bool suppress_usage_tracking = false);
+	                        bool suppress_usage_tracking = false);
 	std::string access_chain(uint32_t base, const uint32_t *indices, uint32_t count, bool index_is_literal,
 	                         bool chain_only = false);
 
@@ -298,6 +304,8 @@ protected:
 	std::string declare_temporary(uint32_t type, uint32_t id);
 	void append_global_func_args(const SPIRFunction &func, uint32_t index, std::vector<std::string> &arglist);
 	std::string to_expression(uint32_t id);
+	std::string to_enclosed_expression(uint32_t id);
+	void strip_enclosed_expression(std::string &expr);
 	std::string to_member_name(const SPIRType &type, uint32_t index);
 	std::string type_to_glsl_constructor(const SPIRType &type);
 	std::string argument_decl(const SPIRFunction::Parameter &arg);
@@ -381,6 +389,10 @@ protected:
 	void check_function_call_constraints(const uint32_t *args, uint32_t length);
 	void handle_invalid_expression(uint32_t id);
 	void find_static_extensions();
+
+	std::string emit_for_loop_initializers(const SPIRBlock &block);
+
+	bool optimize_read_modify_write(const std::string &lhs, const std::string &rhs);
 };
 }
 
