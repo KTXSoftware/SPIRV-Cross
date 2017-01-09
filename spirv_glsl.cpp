@@ -5059,6 +5059,12 @@ string CompilerGLSL::image_type_glsl(const SPIRType &type)
 	else
 		res += "sampler";
 
+	if (options.use_oes_egl_image_for_videos && type.image.video)
+	{
+		require_extension("GL_OES_EGL_image_external");
+		return "samplerExternalOES";
+	}
+
 	switch (type.image.dim)
 	{
 	case Dim1D:

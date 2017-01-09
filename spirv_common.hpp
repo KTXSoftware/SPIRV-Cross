@@ -225,6 +225,7 @@ struct SPIRType : IVariant
 		bool depth;
 		bool arrayed;
 		bool ms;
+		bool video;
 		uint32_t sampled;
 		spv::ImageFormat format;
 	} image;

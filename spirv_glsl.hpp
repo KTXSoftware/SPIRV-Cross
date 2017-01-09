@@ -67,6 +67,8 @@ public:
 		// Mostly useful for debugging SPIR-V files.
 		bool vulkan_semantics = false;
 
+		bool use_oes_egl_image_for_videos = false;
+
 		enum Precision
 		{
 			DontCare,
