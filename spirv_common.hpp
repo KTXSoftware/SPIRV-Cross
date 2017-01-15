@@ -17,13 +17,32 @@
 #ifndef SPIRV_CROSS_COMMON_HPP
 #define SPIRV_CROSS_COMMON_HPP
 
+#include <cstdio>
+#include <cstring>
 #include <functional>
+#include <locale>
 #include <sstream>
-#include <stdio.h>
-#include <string.h>
 
 namespace spirv_cross
 {
+
+#ifdef SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
+#ifndef _MSC_VER
+[[noreturn]]
+#endif
+    inline void
+    report_and_abort(const std::string &msg)
+{
+#ifdef NDEBUG
+	(void)msg;
+#else
+	fprintf(stderr, "There was a compiler error: %s\n", msg.c_str());
+#endif
+	abort();
+}
+
+#define SPIRV_CROSS_THROW(x) report_and_abort(x)
+#else
 class CompilerError : public std::runtime_error
 {
 public:
@@ -32,6 +51,9 @@ public:
 	{
 	}
 };
+
+#define SPIRV_CROSS_THROW(x) throw CompilerError(x)
+#endif
 
 namespace inner
 {
@@ -81,6 +103,11 @@ inline std::string convert_to_string(T &&t)
 #define SPIRV_CROSS_FLT_FMT "%.32g"
 #endif
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4996)
+#endif
+
 inline std::string convert_to_string(float t)
 {
 	// std::to_string for floating point values is broken.
@@ -104,6 +131,10 @@ inline std::string convert_to_string(double t)
 		strcat(buf, ".0");
 	return buf;
 }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 struct Instruction
 {
@@ -793,7 +824,7 @@ public:
 	{
 		holder = std::move(val);
 		if (type != TypeNone && type != new_type)
-			throw CompilerError("Overwriting a variant with new type.");
+			SPIRV_CROSS_THROW("Overwriting a variant with new type.");
 		type = new_type;
 	}
 
@@ -801,9 +832,9 @@ public:
 	T &get()
 	{
 		if (!holder)
-			throw CompilerError("nullptr");
+			SPIRV_CROSS_THROW("nullptr");
 		if (T::type != type)
-			throw CompilerError("Bad cast");
+			SPIRV_CROSS_THROW("Bad cast");
 		return *static_cast<T *>(holder.get());
 	}
 
@@ -811,9 +842,9 @@ public:
 	const T &get() const
 	{
 		if (!holder)
-			throw CompilerError("nullptr");
+			SPIRV_CROSS_THROW("nullptr");
 		if (T::type != type)
-			throw CompilerError("Bad cast");
+			SPIRV_CROSS_THROW("Bad cast");
 		return *static_cast<const T *>(holder.get());
 	}
 
@@ -873,7 +904,6 @@ struct Meta
 		uint32_t input_attachment = 0;
 		uint32_t spec_id = 0;
 		bool builtin = false;
-		bool per_instance = false;
 	};
 
 	Decoration decoration;
@@ -886,6 +916,22 @@ struct Meta
 // name_of_type is the textual name of the type which will be used in the code unless written to by the callback.
 using VariableTypeRemapCallback =
     std::function<void(const SPIRType &type, const std::string &var_name, std::string &name_of_type)>;
+
+class ClassicLocale
+{
+public:
+	ClassicLocale()
+	{
+		old = std::locale::global(std::locale::classic());
+	}
+	~ClassicLocale()
+	{
+		std::locale::global(old);
+	}
+
+private:
+	std::locale old;
+};
 }
 
 #endif
